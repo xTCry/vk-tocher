@@ -1,5 +1,5 @@
 import { VK, CallbackService } from 'vk-io';
-import { AuthErrorCode, DirectAuthorization } from '@vk-io/authorization';
+import { DirectAuthorization } from '@vk-io/authorization';
 import Agent from 'socks5-https-client/lib/Agent';
 
 import ora from 'ora';
@@ -117,44 +117,31 @@ async function loadLogins({
     let i = 0;
     for (const user of usersData) {
         try {
-            let userDataObj = {
-                userId: null,
-                token: user.token,
-                login: user.login,
-                password: user.password,
-                first_name: null,
-                last_name: null,
-            };
+            let userDataObj = await getUserData(user, agent);
 
-            if (user.token) {
-                const vk = new VK({ token: user.token, agent });
-                const [userData] = await vk.api.users.get({});
-
-                userDataObj.userId = userData.id;
-                userDataObj.first_name = userData.first_name;
-                userDataObj.last_name = userData.last_name;
-            } else {
-                //
-                const newUser = await loginVK(user.login, user.password, agent);
-                console.log('newUser by passwords', newUser);
-
-                userDataObj = {
-                    userId: newUser.user,
-                    token: newUser.token,
-                    login: user.login,
-                    password: user.password,
-                    first_name: 'null',
-                    last_name: 'null',
-                };
-            }
-
+            // ! Опасная зона!
+            // Если не удалось получить embed ссылку методом, то происходит переавторизация по ЛоигинуПаролю
             if (true) {
                 try {
                     const embed = await getMyURL(userDataObj.token, ownerId);
                     await pushToFile(pathToEmbedSave, embed);
                 } catch (e) {
-                    text += ' Fail extract embed.';
-                    color = oraColor.gray;
+                    if (e.code && e.code === 3) {
+                        // Retry get new andoird token
+                        delete user.token;
+                        userDataObj = await getUserData(user, agent);
+                    }
+
+                    try {
+                        const embed = await getMyURL(userDataObj.token, ownerId);
+                        await pushToFile(pathToEmbedSave, embed);
+                    } catch (e) {
+                        console.log('**\n');
+                        log.warn(e);
+                        console.log('***\n');
+                        text += ' Fail extract embed.';
+                        color = oraColor.gray;
+                    }
                 }
             }
 
@@ -199,6 +186,42 @@ async function loadLogins({
 
     spinnerTokens.succeed(`Extracted ${readUsers.length} users`);
     return readUsers;
+}
+
+async function getUserData(user: {
+    login: string;
+    password: string;
+    token?: string;
+}, agent?: Agent) {
+    let userDataObj = {
+        userId: null,
+        token: user.token,
+        login: user.login,
+        password: user.password,
+        first_name: null,
+        last_name: null,
+    };
+
+    if (user.token) {
+        const vk = new VK({ token: user.token, agent });
+        const [userData] = await vk.api.users.get({});
+
+        userDataObj.userId = userData.id;
+        userDataObj.first_name = userData.first_name;
+        userDataObj.last_name = userData.last_name;
+    } else {
+        const newUser = await loginVK(user.login, user.password, agent);
+
+        userDataObj = {
+            userId: newUser.user,
+            token: newUser.token,
+            login: user.login,
+            password: user.password,
+            first_name: 'null',
+            last_name: 'null',
+        };
+    }
+    return userDataObj;
 }
 
 async function loginVK(login: string, password: string, agent?: Agent) {
@@ -300,20 +323,18 @@ async function getMyURL(token: string, owner_id?: number): Promise<string> {
     }
 
     try {
-        let ret = await vk.api.call('execute.resolveScreenName', {
-            screen_name: 'app7148888',
+        let ret = await vk.api.call('execute.getServiceApp', {
+            app_id: 7148888,
             owner_id,
-            func_v: 8,
             v: '5.97',
         });
 
-        if (!ret.response.embedded_uri || !ret.response.embedded_uri.view_url) {
-            throw 'Не удалось получить ссылку.';
+        if (!ret.response.app || !ret.response.app.view_url) {
+            throw new Error('Не удалось получить ссылку. #1');
         }
 
-        return ret.response.embedded_uri.view_url;
+        return ret.response.app.view_url;
     } catch (error) {
-        // console.error('API Error:', error);
-        throw 'Не удалось получить ссылку.';
+        throw error;
     }
 }
